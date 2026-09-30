@@ -4,18 +4,18 @@ A web app for uploading research papers (PDFs) and asking questions about their 
 
 ## What it does
 
-- **Upload PDFs** — accepted immediately and indexed in the background; you can keep using the app while it processes
-- **Track indexing** — each paper's indexing status (processing / done / failed) is stored in PostgreSQL
-- **ReAct agent loop** — instead of a single retrieval pass, a LangGraph agent decides which tool to call, sees the results, and decides whether to search again or answer. This loop repeats until the agent has enough information, capped at 5 tool calls
+- **Upload PDFs** - accepted immediately and indexed in the background; you can keep using the app while it processes
+- **Track indexing** - each paper's indexing status (processing / done / failed) is stored in PostgreSQL
+- **ReAct agent loop** - instead of a single retrieval pass, a LangGraph agent decides which tool to call, sees the results, and decides whether to search again or answer. This loop repeats until the agent has enough information, capped at 5 tool calls
 - **Four retrieval tools the agent can choose from:**
-  - `search_papers` — general semantic search across all selected papers
-  - `compare_papers` — searches each paper individually for a specific aspect so the agent can compare them side by side
-  - `extract_structured` — targeted retrieval for specific fields: methodology, datasets, results, limitations, contributions, or future work
-  - `find_contradictions` — retrieves per paper on a topic so the agent can identify conflicting claims
-- **Streaming** — tool calls and the final answer are streamed to the frontend via SSE; the UI shows each tool invocation as it happens, then streams the answer token by token
-- **Source attribution** — after the agent finishes, every document it retrieved is collected and shown as sources under the answer
-- **Explore papers** — browse all indexed papers; ask questions scoped to a single paper or across your whole library
-- **Semantic cache** — questions with cosine similarity ≥ 0.92 against a previously answered question (for the same paper set) return the cached answer without touching the agent, tools, or LLM
+  - `search_papers` - general semantic search across all selected papers
+  - `compare_papers` - searches each paper individually for a specific aspect so the agent can compare them side by side
+  - `extract_structured` - targeted retrieval for specific fields: methodology, datasets, results, limitations, contributions, or future work
+  - `find_contradictions` - retrieves per paper on a topic so the agent can identify conflicting claims
+- **Streaming** - tool calls and the final answer are streamed to the frontend via SSE; the UI shows each tool invocation as it happens, then streams the answer token by token
+- **Source attribution** - after the agent finishes, every document it retrieved is collected and shown as sources under the answer
+- **Explore papers** - browse all indexed papers; ask questions scoped to a single paper or across your whole library
+- **Semantic cache** - questions with cosine similarity ≥ 0.92 against a previously answered question (for the same paper set) return the cached answer without touching the agent, tools, or LLM
 
 ## Stack
 
@@ -25,7 +25,7 @@ A web app for uploading research papers (PDFs) and asking questions about their 
 | Agent framework | LangGraph (`create_react_agent`) |
 | LLM / tool orchestration | LangChain · LangChain Google GenAI |
 | Vector store | ChromaDB (persisted to disk) |
-| Embeddings | Ollama — `mxbai-embed-large` |
+| Embeddings | Ollama - `mxbai-embed-large` |
 | LLM | Google Gemini `gemini-3.6-flash` |
 | Metadata DB | PostgreSQL |
 | Frontend | React · TypeScript · Vite |
@@ -47,7 +47,7 @@ frontend/scholar/   React + TypeScript frontend (Vite)
 
 ## Setup
 
-### 1 — PostgreSQL
+### 1 - PostgreSQL
 
 Create the database and table:
 
@@ -77,7 +77,7 @@ postgres://<user>:<password>@localhost/research_rag
 
 Update it to match your PostgreSQL user, password, and database name.
 
-### 2 — Ollama
+### 2 - Ollama
 
 ```bash
 ollama pull mxbai-embed-large
@@ -85,7 +85,7 @@ ollama pull mxbai-embed-large
 
 Ollama must be running (`ollama serve`) before the backend starts.
 
-### 3 — Backend
+### 3 - Backend
 
 ```bash
 cd backend
@@ -113,7 +113,7 @@ uvicorn app:app --reload
 
 API runs at `http://localhost:8000`.
 
-### 4 — Frontend
+### 4 - Frontend
 
 ```bash
 cd frontend/scholar
@@ -130,5 +130,4 @@ If your backend is on a different port, copy `.env.example` to `.env` and set `V
 - The semantic cache is in-memory and resets on every server restart.
 - The agent always calls at least one tool before answering, which adds latency compared to a direct LLM call.
 - Grounding is enforced through prompting; the LLM may still occasionally draw on its own training knowledge.
-- The PostgreSQL connection string is hardcoded in `backend/app.py` rather than read from `.env`.
-- There is no persistent memory across sessions — the agent starts fresh for every question.
+- There is no persistent memory across sessions - the agent starts fresh for every question.
