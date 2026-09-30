@@ -5,6 +5,7 @@ import type {
   IndexStatusResponse,
   Paper,
   Source,
+  Step,
 } from "./types";
 
 export const API_BASE: string =
@@ -213,6 +214,7 @@ export async function askQuestion(
  * Stream an answer from the server via SSE.
  *
  * The server sends:
+ *   event: step    — { type: "planning"|"searching", text: string }
  *   event: token   — each text chunk as it is generated
  *   event: done    — final payload { sources: Source[] }
  *   event: error   — error message string
@@ -226,6 +228,7 @@ export async function streamAskQuestion(
   onToken: (text: string) => void,
   onDone: (sources: Source[]) => void,
   onError: (message: string) => void,
+  onStep: (step: Step) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(ROUTES.ask, {
@@ -263,7 +266,8 @@ export async function streamAskQuestion(
         if (!data) continue;
 
         const payload = JSON.parse(data) as unknown;
-        if (eventType === "token") onToken(payload as string);
+        if (eventType === "step") onStep(payload as Step);
+        else if (eventType === "token") onToken(payload as string);
         else if (eventType === "done")
           onDone((payload as { sources: Source[] }).sources ?? []);
         else if (eventType === "error") onError(payload as string);

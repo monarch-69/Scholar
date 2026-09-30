@@ -51,10 +51,17 @@ export interface AskResponse {
   sources: Source[];
 }
 
+/** One reasoning step emitted during multi-hop retrieval. */
+export interface Step {
+  type: "planning" | "searching";
+  text: string;
+}
+
 /** One question-and-answer exchange in the transcript. */
 export interface Turn {
   id: string;
   question: string;
+  steps: Step[];   // multi-hop reasoning steps, shown before the answer
   answer: string | null; // null while the request is in flight
   sources: Source[];
   error: string | null;

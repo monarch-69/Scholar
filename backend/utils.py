@@ -28,19 +28,115 @@ class AskRequest(BaseModel):
     paper_ids: List[str]
 
 
+# ── Agent system prompt ────────────────────────────────────────────────────────
+
 _ASK_SYSTEM = (
-    "You are a precise research assistant. "
-    "Answer the user's question using ONLY the context passages provided. "
-    "Do not rely on prior knowledge or memory. "
-    "If the provided context does not contain the answer, say: "
-    "'I couldn't find that information in the selected papers.' "
-    "Be concise and accurate. "
-    "At the very end of your response, on its own line, write exactly:\n"
-    "####RELEVANT####\n"
-    "then copy the single most relevant passage verbatim from the context above."
+    "You are a research assistant with tools for searching indexed research papers.\n\n"
+    "Available tools:\n"
+    "- search_papers: general semantic search — use for most questions\n"
+    "- compare_papers: searches each paper individually for an aspect — use when asked to compare across papers\n"
+    "- extract_structured: pull specific structured info (methodology / datasets / results / limitations / contributions / future_work)\n"
+    "- find_contradictions: find conflicting or contrasting claims across papers on a topic\n\n"
+    "Rules:\n"
+    "1. Always call at least one tool before answering — never answer from memory or prior knowledge\n"
+    "2. If the first search is insufficient, search again with a different query or tool\n"
+    "3. Answer ONLY from the retrieved passages; if they don't contain the answer, say so clearly\n"
+    "4. Be concise and accurate"
 )
 
-_RELEVANT_MARKER = "####RELEVANT####"
+# Labels shown in the UI for each tool call
+_TOOL_LABELS: dict = {
+    "search_papers": "Searching",
+    "compare_papers": "Comparing across papers",
+    "extract_structured": "Extracting",
+    "find_contradictions": "Scanning for contradictions",
+}
+
+
+# ── Agent tool factory ─────────────────────────────────────────────────────────
+
+def make_agent_tools(vector_store, paper_ids: List[str]) -> Tuple[list, List[Document]]:
+    """Build the four agent tools scoped to `paper_ids`.
+
+    Returns (tools, retrieved) where `retrieved` is a shared list that every
+    tool appends to, giving the caller a full record of every doc the agent
+    touched.
+    """
+    retrieved: List[Document] = []
+
+    chroma_filter = (
+        {"id": paper_ids[0]}
+        if len(paper_ids) == 1
+        else {"id": {"$in": paper_ids}}
+    )
+
+    @lc_tool
+    def search_papers(query: str) -> str:
+        """Search indexed research papers for passages relevant to a query. Use for general questions."""
+        docs: List[Document] = vector_store.similarity_search(query, k=5, filter=chroma_filter)
+        retrieved.extend(docs)
+        if not docs:
+            return "No relevant passages found in the selected papers."
+        return "\n\n---\n\n".join(
+            f"[{doc.metadata.get('name', 'Unknown')}]\n{doc.page_content}"
+            for doc in docs
+        )
+
+    @lc_tool
+    def compare_papers(aspect: str) -> str:
+        """Compare how different papers approach a specific aspect (e.g. methodology, evaluation, results). Searches each paper individually."""
+        per_paper: dict = {}
+        for pid in paper_ids:
+            docs: List[Document] = vector_store.similarity_search(aspect, k=2, filter={"id": pid})
+            if docs:
+                retrieved.extend(docs)
+                name = docs[0].metadata.get("name", pid)
+                per_paper[name] = "\n".join(d.page_content for d in docs)
+
+        if not per_paper:
+            return "No relevant passages found to compare."
+
+        return "\n\n═══\n\n".join(
+            f"[{name}]\n{content}" for name, content in per_paper.items()
+        )
+
+    @lc_tool
+    def extract_structured(field: str) -> str:
+        """Extract specific structured information from the papers. field must be one of: methodology, datasets, results, limitations, contributions, future_work."""
+        field_queries: dict = {
+            "methodology":    "research methodology approach method technique algorithm",
+            "datasets":       "dataset data benchmark evaluation experiments training",
+            "results":        "results performance accuracy metrics evaluation scores",
+            "limitations":    "limitations drawbacks constraints weaknesses",
+            "contributions":  "contributions novelty proposed method innovation key insight",
+            "future_work":    "future work open problems next steps conclusion",
+        }
+        query = field_queries.get(field.lower().strip(), field)
+        docs: List[Document] = vector_store.similarity_search(query, k=6, filter=chroma_filter)
+        retrieved.extend(docs)
+        if not docs:
+            return f"No passages found for '{field}'."
+        return "\n\n---\n\n".join(
+            f"[{doc.metadata.get('name', 'Unknown')}]\n{doc.page_content}"
+            for doc in docs
+        )
+
+    @lc_tool
+    def find_contradictions(topic: str) -> str:
+        """Find potentially conflicting or contradicting claims across papers on a specific topic."""
+        parts: List[str] = []
+        for pid in paper_ids:
+            docs: List[Document] = vector_store.similarity_search(topic, k=3, filter={"id": pid})
+            if docs:
+                retrieved.extend(docs)
+                name = docs[0].metadata.get("name", pid)
+                parts.append(f"[{name}]\n" + "\n".join(d.page_content for d in docs))
+
+        if not parts:
+            return "No relevant passages found."
+        return "\n\n═══\n\n".join(parts)
+
+    return [search_papers, compare_papers, extract_structured, find_contradictions], retrieved
 
 
 # ── Semantic cache ─────────────────────────────────────────────────────────────
@@ -56,8 +152,9 @@ class _CacheEntry:
 class SemanticCache:
     """In-memory semantic cache keyed on (question embedding, paper_ids set).
 
-    Two questions with cosine similarity ≥ threshold scoped to the same paper
-    set return the cached answer without hitting the vector store or LLM.
+    Questions with cosine similarity ≥ threshold against a cached question
+    (for the same paper set) return the stored answer without touching the
+    agent, tools, or LLM.
     """
 
     def __init__(self, embedding_model, threshold: float = 0.92):
@@ -74,16 +171,17 @@ class SemanticCache:
     def lookup(self, question: str, paper_ids: frozenset) -> Tuple:
         """Return (answer, sources, embedding).
 
-        On a hit, answer and sources are the cached values.
-        On a miss, answer and sources are None; embedding is always returned
-        so the caller can pass it directly to store() without re-embedding.
+        On a hit: answer and sources are the cached values.
+        On a miss: answer and sources are None; embedding is always returned
+        so the caller can pass it to store() without re-embedding.
         """
         emb = self._model.embed_query(question)
         for entry in self._entries:
             if entry.paper_ids != paper_ids:
                 continue
-            if self._cosine(emb, entry.embedding) >= self._threshold:
-                logger.info("Semantic cache HIT (%.3f) for %r", self._cosine(emb, entry.embedding), question[:60])
+            sim = self._cosine(emb, entry.embedding)
+            if sim >= self._threshold:
+                logger.info("Semantic cache HIT (%.3f) for %r", sim, question[:60])
                 return entry.answer, entry.sources, emb
         return None, None, emb
 
@@ -96,10 +194,10 @@ class SemanticCache:
         ))
 
 
-# ── LLM streaming helpers ──────────────────────────────────────────────────────
+# ── LLM token extraction ───────────────────────────────────────────────────────
 
 def _extract_token(chunk) -> str:
-    """Extract plain text from an LLM stream chunk (handles Gemini content blocks)."""
+    """Extract plain text from an LLM chunk or message (handles Gemini content blocks)."""
     content = chunk.content
     if isinstance(content, str):
         return content
@@ -112,33 +210,7 @@ def _extract_token(chunk) -> str:
     return ""
 
 
-def _parse_response(full_response: str, retrieved_docs: List[Document]) -> Tuple[str, list]:
-    """Split the model's full response on the ####RELEVANT#### marker.
-
-    Returns (clean_answer, sources).  Sources is a one-element list when the
-    model included a best-passage excerpt, otherwise empty.
-    """
-    if _RELEVANT_MARKER in full_response:
-        answer_part, relevant_text = full_response.split(_RELEVANT_MARKER, 1)
-        clean_answer = answer_part.strip()
-        relevant_text = relevant_text.strip()
-
-        source = None
-        if retrieved_docs and relevant_text:
-            rel_words = set(relevant_text.lower().split())
-            best_doc = max(
-                retrieved_docs,
-                key=lambda d: len(rel_words & set(d.page_content.lower().split())),
-            )
-            source = {
-                "paper_id": best_doc.metadata.get("id", ""),
-                "paper_name": best_doc.metadata.get("name", "Unknown"),
-                "excerpt": relevant_text[:500],
-                "section": None,
-            }
-        return clean_answer, [source] if source else []
-    return full_response.strip(), []
-
+# ── Config + DB helpers ────────────────────────────────────────────────────────
 
 def load_config(
     collection_name: str | None = None,
@@ -161,48 +233,6 @@ async def get_meta_db(request: Request):
     _conn_pool: AsyncConnectionPool = request.app.state.meta_db
     async with _conn_pool.connection() as _connection:
         yield _connection
-
-
-def make_search_tool(vector_store, paper_ids: List[str]) -> Tuple:
-    """Create a similarity-search tool scoped to the given paper IDs.
-
-    Returns ``(tool_fn, retrieved_docs)`` where ``retrieved_docs`` is a list
-    that is populated with every Document retrieved when the tool is invoked.
-    Pass the tool to the agent; inspect ``retrieved_docs`` afterwards to build
-    the sources list for the API response.
-    """
-    retrieved: List[Document] = []
-
-    chroma_filter = (
-        {"id": paper_ids[0]}
-        if len(paper_ids) == 1
-        else {"id": {"$in": paper_ids}}
-    )
-
-    @lc_tool(parse_docstring=True)
-    def search_papers(query: str) -> str:
-        """
-        Search indexed research papers and retrieve relevant passages.
-
-        Args:
-            query: Natural language search query to find relevant passages.
-
-        Returns:
-            Formatted passages from the research papers relevant to the query.
-        """
-        docs: List[Document] = vector_store.similarity_search(query, k=6, filter=chroma_filter)
-        retrieved.extend(docs)
-
-        if not docs:
-            return "No relevant passages found in the selected papers."
-
-        parts = [
-            f"[Passage {i + 1} – {doc.metadata.get('name', 'Unknown')}]\n{doc.page_content}"
-            for i, doc in enumerate(docs)
-        ]
-        return "\n\n---\n\n".join(parts)
-
-    return search_papers, retrieved
 
 
 async def indexer_bg_worker(

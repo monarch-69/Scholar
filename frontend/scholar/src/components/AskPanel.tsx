@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import { streamAskQuestion } from "../api";
-import type { Paper, Source, Turn } from "../types";
+import type { Paper, Source, Step, Turn } from "../types";
 
 interface Props {
   papers: Paper[];
@@ -69,7 +69,7 @@ export default function AskPanel({ papers, initialFocusId }: Props) {
     const id = crypto.randomUUID();
     setTurns((prev) => [
       ...prev,
-      { id, question: q, answer: null, sources: [], error: null },
+      { id, question: q, steps: [], answer: null, sources: [], error: null },
     ]);
     setQuestion("");
     const ta = textareaRef.current;
@@ -104,6 +104,14 @@ export default function AskPanel({ papers, initialFocusId }: Props) {
         (message) => {
           setTurns((prev) =>
             prev.map((t) => (t.id === id ? { ...t, error: message } : t))
+          );
+        },
+        // onStep: multi-hop reasoning step (planning / searching)
+        (step: Step) => {
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === id ? { ...t, steps: [...t.steps, step] } : t
+            )
           );
         },
         abort.signal,
@@ -265,6 +273,21 @@ export default function AskPanel({ papers, initialFocusId }: Props) {
                       S
                     </div>
                     <div className="chat-ai-body">
+                      {/* Reasoning steps — visible from first step until answer is done */}
+                      {turn.steps.length > 0 && (
+                        <div className={`chat-steps${turn.answer !== null && !busy ? " chat-steps-done" : ""}`}>
+                          {turn.steps.map((s, i) => (
+                            <div key={i} className={`chat-step chat-step-${s.type}`}>
+                              {s.type === "planning" ? (
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                              ) : (
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                              )}
+                              <span>{s.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {turn.error ? (
                         <div className="chat-ai-bubble chat-ai-err">
                           <p>{turn.error}</p>

@@ -1,32 +1,39 @@
 # Scholar
 
-A web app for uploading research papers (PDFs) and asking questions about their content. Answers are generated from passages retrieved from your uploaded papers, and the LLM is instructed to answer only from that retrieved context.
+A web app for uploading research papers (PDFs) and asking questions about their content using an agentic AI loop. The agent retrieves passages from your indexed papers using specialized tools and streams its reasoning and answer to the UI in real time.
 
 ## What it does
 
-- **Upload PDFs** — the file is accepted immediately and indexed in the background, so you can keep using the app while it processes
-- **Track indexing** — each paper's indexing status is stored in PostgreSQL
-- **Ask questions** — a chat interface retrieves relevant passages from the indexed papers and streams the LLM answer token by token
-- **Source attribution** — each answer cites the passage from the paper that best supports it
+- **Upload PDFs** — accepted immediately and indexed in the background; you can keep using the app while it processes
+- **Track indexing** — each paper's indexing status (processing / done / failed) is stored in PostgreSQL
+- **ReAct agent loop** — instead of a single retrieval pass, a LangGraph agent decides which tool to call, sees the results, and decides whether to search again or answer. This loop repeats until the agent has enough information, capped at 5 tool calls
+- **Four retrieval tools the agent can choose from:**
+  - `search_papers` — general semantic search across all selected papers
+  - `compare_papers` — searches each paper individually for a specific aspect so the agent can compare them side by side
+  - `extract_structured` — targeted retrieval for specific fields: methodology, datasets, results, limitations, contributions, or future work
+  - `find_contradictions` — retrieves per paper on a topic so the agent can identify conflicting claims
+- **Streaming** — tool calls and the final answer are streamed to the frontend via SSE; the UI shows each tool invocation as it happens, then streams the answer token by token
+- **Source attribution** — after the agent finishes, every document it retrieved is collected and shown as sources under the answer
 - **Explore papers** — browse all indexed papers; ask questions scoped to a single paper or across your whole library
-- **Semantic cache** — questions with cosine similarity ≥ 0.92 against a previously answered question (for the same paper set) return the cached answer without hitting the vector store or LLM
+- **Semantic cache** — questions with cosine similarity ≥ 0.92 against a previously answered question (for the same paper set) return the cached answer without touching the agent, tools, or LLM
 
 ## Stack
 
 | Layer | Technology |
 |---|---|
 | Backend | Python · FastAPI · psycopg3 |
-| RAG framework | LangChain |
+| Agent framework | LangGraph (`create_react_agent`) |
+| LLM / tool orchestration | LangChain · LangChain Google GenAI |
 | Vector store | ChromaDB (persisted to disk) |
 | Embeddings | Ollama — `mxbai-embed-large` |
-| LLM | Google Gemini (configured in `backend/app.py`) |
+| LLM | Google Gemini `gemini-3.6-flash` |
 | Metadata DB | PostgreSQL |
 | Frontend | React · TypeScript · Vite |
 
 ## Project structure
 
 ```
-backend/            FastAPI server, ingestion and retrieval logic
+backend/            FastAPI server, agent tools, indexing logic
 frontend/scholar/   React + TypeScript frontend (Vite)
 ```
 
@@ -40,7 +47,7 @@ frontend/scholar/   React + TypeScript frontend (Vite)
 
 ## Setup
 
-### 1 - PostgreSQL
+### 1 — PostgreSQL
 
 Create the database and table:
 
@@ -54,23 +61,23 @@ CREATE TABLE paper_store (
     paper_title          TEXT,
     paper_summary        TEXT,
     paper_authors        TEXT[],
-    paper_size           NUMERIC,          -- file size in MB
+    paper_size           NUMERIC,
     paper_chunks_created INTEGER,
     indexed              BOOLEAN DEFAULT FALSE,
-    status               TEXT,             -- set to 'new' on upload
+    status               TEXT,
     error                TEXT
 );
 ```
 
-The connection string is currently hardcoded in `backend/app.py` in this form:
+The connection string is hardcoded in `backend/app.py`:
 
 ```
 postgres://<user>:<password>@localhost/research_rag
 ```
 
-Update it there to match your PostgreSQL user, password, and database name.
+Update it to match your PostgreSQL user, password, and database name.
 
-### 2 - Ollama
+### 2 — Ollama
 
 ```bash
 ollama pull mxbai-embed-large
@@ -78,7 +85,7 @@ ollama pull mxbai-embed-large
 
 Ollama must be running (`ollama serve`) before the backend starts.
 
-### 3 - Backend
+### 3 — Backend
 
 ```bash
 cd backend
@@ -106,7 +113,7 @@ uvicorn app:app --reload
 
 API runs at `http://localhost:8000`.
 
-### 4 - Frontend
+### 4 — Frontend
 
 ```bash
 cd frontend/scholar
@@ -120,6 +127,8 @@ If your backend is on a different port, copy `.env.example` to `.env` and set `V
 
 ## Known limitations
 
-- The semantic cache is in-memory and resets when the server restarts.
-- Grounding is enforced through prompting, so the LLM may still occasionally draw on its own training knowledge.
-- The PostgreSQL connection string is hardcoded rather than read from `.env`.
+- The semantic cache is in-memory and resets on every server restart.
+- The agent always calls at least one tool before answering, which adds latency compared to a direct LLM call.
+- Grounding is enforced through prompting; the LLM may still occasionally draw on its own training knowledge.
+- The PostgreSQL connection string is hardcoded in `backend/app.py` rather than read from `.env`.
+- There is no persistent memory across sessions — the agent starts fresh for every question.
