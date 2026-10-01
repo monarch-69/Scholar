@@ -21,6 +21,7 @@ class Config(BaseModel):
     upload_file_limit: int
     meta_db_name: str
     paper_store_dir: str
+    postgres_conn_string: str
 
 
 class AskRequest(BaseModel):
@@ -218,6 +219,7 @@ def load_config(
     upload_file_limit: int | None = None,
     meta_db_name: str | None = None,
     paper_store_dir: str | None = None,
+    postgres_conn_string: str | None = None
 ) -> Config:
     return Config(
         chroma_collection_name=collection_name or os.getenv("CHROMA_COLLECTION_NAME") or "research_papers",
@@ -225,6 +227,7 @@ def load_config(
         upload_file_limit=upload_file_limit or int(os.getenv("UPLOAD_FILE_LIMIT") or 100),
         meta_db_name=meta_db_name or os.getenv("META_DB_NAME") or "research_rag",
         paper_store_dir=paper_store_dir or os.getenv("PAPER_STORE_DIR") or "user-papers/store",
+        postgres_conn_string=postgres_conn_string or os.getenv("POSTGRES_CONNECTION_STRING") or ""
     )
 
 
